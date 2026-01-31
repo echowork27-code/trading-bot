@@ -1,198 +1,14 @@
 import { store } from '../store/state.js';
-import { getCollection, getCollectionItems } from '../api/nft.js';
-import { formatUsd, nanoToTon, formatNumber } from '../utils/format.js';
+import { GIFT_COLLECTIONS, TOTAL_GIFTS, TIER_CONFIG, TIER_COUNTS } from '../data/gift-collections.js';
+import { getFragmentCollectionUrl } from '../api/fragment.js';
+import { formatNumber } from '../utils/format.js';
 
-// Curated Telegram Gift NFT collections (real ones only)
-const GIFT_COLLECTIONS = [
-  {
-    address: 'EQDmkj65Ab_m0aZaW8IpKw4kYqIgITw_HRstYEkVQ6NIYCyW',
-    name: 'Telegram Gifts',
-    emoji: '🎁',
-  },
-  // Plush Pepe — the most traded TON gift collection
-  {
-    address: 'EQCZ_bksSMU9Ik2sYx9HdOXEMLEC_ZEifSssa6oYev1PLUSH',
-    name: 'Plush Pepe',
-    emoji: '🐸',
-  },
-];
+/* ── Local UI state ─────────────────────────────────────── */
+let activeFilter = 'hot';   // hot | rare | all
+let searchQuery  = '';
+let mounted      = false;
 
-let mounted = false;
-
-async function loadGifts() {
-  store.set('giftsLoading', true);
-  try {
-    const enriched = await Promise.all(
-      GIFT_COLLECTIONS.map(async ({ address, name: fallbackName, emoji }) => {
-        try {
-          // Get collection metadata
-          let col;
-          try {
-            col = await getCollection(address);
-          } catch {
-            col = {};
-          }
-          
-          // Get items (first 50)
-          let items = [];
-          try {
-            items = await getCollectionItems(address, 50, 0);
-          } catch { /* empty */ }
-
-          const onSale = items.filter(i => i.sale);
-          const floorPrice = onSale.length > 0
-            ? Math.min(...onSale.map(i => Number(i.sale?.price?.value || 0)))
-            : null;
-
-          return {
-            address,
-            name: col?.metadata?.name || fallbackName,
-            description: col?.metadata?.description || '',
-            image: col?.previews?.[1]?.url || col?.metadata?.image || '',
-            emoji,
-            items,
-            onSaleCount: onSale.length,
-            totalItems: col?.next_item_index || items.length,
-            floorPrice,
-            onSaleItems: onSale.sort((a, b) => 
-              Number(a.sale?.price?.value || 0) - Number(b.sale?.price?.value || 0)
-            ).slice(0, 10),
-          };
-        } catch {
-          return {
-            address,
-            name: fallbackName,
-            emoji,
-            items: [],
-            onSaleCount: 0,
-            totalItems: 0,
-            floorPrice: null,
-            onSaleItems: [],
-          };
-        }
-      })
-    );
-
-    store.update({
-      giftCollections: enriched,
-      giftsLoading: false,
-    });
-  } catch (err) {
-    console.error('Failed to load gifts:', err);
-    store.set('giftsLoading', false);
-  }
-}
-
-export function render() {
-  const loading = store.get('giftsLoading');
-  const collections = store.get('giftCollections') || [];
-  const tonPrice = store.get('tonPrice');
-  const tonUsd = tonPrice?.price || 0;
-
-  if (loading && collections.length === 0) {
-    return `
-      <div class="section-header">
-        <span class="section-title">🎁 Telegram Gifts</span>
-      </div>
-      <div class="skeleton skeleton-card"></div>
-      <div class="skeleton skeleton-card"></div>
-    `;
-  }
-
-  let html = `
-    <div class="section-header">
-      <span class="section-title">🎁 Gift Collections</span>
-      <span class="refresh-hint">${loading ? '⟳' : ''}</span>
-    </div>
-  `;
-
-  if (collections.length === 0) {
-    html += `
-      <div class="empty-state">
-        <div class="empty-state-icon">🎁</div>
-        <div class="empty-state-text">Loading gift collections...</div>
-      </div>
-    `;
-    return html;
-  }
-
-  // Collection overview cards
-  collections.forEach(col => {
-    const floorTon = col.floorPrice ? nanoToTon(col.floorPrice) : null;
-    const floorUsdVal = floorTon && tonUsd ? floorTon * tonUsd : null;
-
-    html += `
-      <div class="card">
-        <div class="card-header">
-          <div>
-            <div class="card-title">${col.emoji} ${escHtml(col.name)}</div>
-            ${col.description ? `<div class="card-subtitle">${escHtml(col.description.slice(0, 80))}</div>` : ''}
-          </div>
-          ${col.onSaleCount > 0 ? `<span class="card-badge hot">🔥 ${col.onSaleCount} listed</span>` : '<span class="card-badge" style="background:rgba(142,142,147,0.2);color:var(--tg-theme-hint-color)">0 listed</span>'}
-        </div>
-        <div class="card-stats">
-          <div class="stat">
-            <span class="stat-label">Floor</span>
-            <span class="stat-value">${floorTon ? `${floorTon.toFixed(2)} TON` : '—'}</span>
-          </div>
-          <div class="stat">
-            <span class="stat-label">USD</span>
-            <span class="stat-value">${floorUsdVal ? formatUsd(floorUsdVal) : '—'}</span>
-          </div>
-          <div class="stat">
-            <span class="stat-label">Total</span>
-            <span class="stat-value">${formatNumber(col.totalItems)}</span>
-          </div>
-        </div>
-      </div>
-    `;
-
-    // Show cheapest listed items
-    if (col.onSaleItems && col.onSaleItems.length > 0) {
-      html += `
-        <div class="section-header" style="margin-top:4px">
-          <span class="section-title" style="font-size:12px">💰 Best Deals — ${escHtml(col.name)}</span>
-        </div>
-      `;
-
-      col.onSaleItems.slice(0, 5).forEach(item => {
-        const name = item.metadata?.name || 'Unknown';
-        const priceTon = nanoToTon(Number(item.sale?.price?.value || 0));
-        const priceUsd = priceTon * tonUsd;
-        const marketplace = item.sale?.market_name || 'Unknown';
-        const image = item.previews?.[0]?.url || '';
-
-        html += `
-          <div class="token-row" onclick="window.open('https://getgems.io/nft/${item.address}', '_blank')">
-            <div class="token-icon">
-              ${image ? `<img src="${escHtml(image)}" alt="" loading="lazy" onerror="this.parentElement.textContent='${col.emoji}'"/>` : col.emoji}
-            </div>
-            <div class="token-info">
-              <div class="token-name">${escHtml(name)}</div>
-              <div class="token-symbol">${marketplace}</div>
-            </div>
-            <div class="token-price-col">
-              <div class="token-price">${priceTon.toFixed(2)} TON</div>
-              <div class="token-change" style="color:var(--tg-theme-hint-color)">${formatUsd(priceUsd)}</div>
-            </div>
-          </div>
-        `;
-      });
-    }
-  });
-
-  html += `
-    <div class="card" style="margin-top:16px; text-align:center;">
-      <div style="font-size:13px; color:var(--tg-theme-hint-color); padding:12px 0;">
-        💡 More collections coming soon<br/>
-        TonConnect wallet integration in Phase 2
-      </div>
-    </div>
-  `;
-
-  return html;
-}
-
+/* ── Helpers ────────────────────────────────────────────── */
 function escHtml(str) {
   if (!str) return '';
   const el = document.createElement('span');
@@ -200,13 +16,291 @@ function escHtml(str) {
   return el.innerHTML;
 }
 
+function tierBadge(t) {
+  const cfg = TIER_CONFIG[t];
+  if (!cfg) return '';
+  return `<span class="card-badge" style="background:${cfg.bg};color:${cfg.color}">${cfg.label}</span>`;
+}
+
+/** Sort helpers */
+const bySupplyAsc  = (a, b) => a.supply - b.supply;
+const bySupplyDesc = (a, b) => b.supply - a.supply;
+
+function getFilteredCollections() {
+  let list = [...GIFT_COLLECTIONS];
+
+  // Search filter
+  if (searchQuery.trim()) {
+    const q = searchQuery.trim().toLowerCase();
+    list = list.filter(c =>
+      c.name.toLowerCase().includes(q) ||
+      c.tier.includes(q) ||
+      c.emoji.includes(q)
+    );
+  }
+
+  switch (activeFilter) {
+    case 'hot':
+      // "Hot" = rarest first (lowest supply = most trading activity & value)
+      list.sort(bySupplyAsc);
+      list = list.slice(0, 30);
+      break;
+    case 'rare':
+      list.sort(bySupplyAsc);
+      break;
+    case 'all':
+    default:
+      list.sort((a, b) => a.name.localeCompare(b.name));
+      break;
+  }
+  return list;
+}
+
+/* ── Render ──────────────────────────────────────────────── */
+export function render() {
+  const collections = getFilteredCollections();
+
+  let html = '';
+
+  /* ─ Market Overview ─ */
+  html += `
+    <div class="section-header">
+      <span class="section-title">🎁 Gift Market</span>
+    </div>
+    <div class="card">
+      <div class="card-stats" style="justify-content:space-between">
+        <div class="stat">
+          <span class="stat-label">Collections</span>
+          <span class="stat-value">${GIFT_COLLECTIONS.length}</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Total Gifts</span>
+          <span class="stat-value">${formatNumber(TOTAL_GIFTS)}</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Legendary</span>
+          <span class="stat-value" style="color:#FFD700">${TIER_COUNTS.legendary || 0}</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Epic</span>
+          <span class="stat-value" style="color:#AF52DE">${TIER_COUNTS.epic || 0}</span>
+        </div>
+      </div>
+    </div>
+  `;
+
+  /* ─ Filter pills + search ─ */
+  const pills = [
+    { id: 'hot',  label: '🔥 Hot' },
+    { id: 'rare', label: '💎 Rare' },
+    { id: 'all',  label: '📊 All' },
+  ];
+
+  html += `<div class="filter-row">`;
+  pills.forEach(p => {
+    const cls = p.id === activeFilter ? 'filter-pill active' : 'filter-pill';
+    html += `<button class="${cls}" data-filter="${p.id}">${p.label}</button>`;
+  });
+  html += `<button class="filter-pill${searchQuery ? ' active' : ''}" data-filter="search">🔍 Search</button>`;
+  html += `</div>`;
+
+  /* Search input (visible only when search is focused or has text) */
+  if (activeFilter === 'search' || searchQuery) {
+    html += `
+      <div style="margin-bottom:12px">
+        <input
+          id="gift-search"
+          type="text"
+          placeholder="Search collections..."
+          value="${escHtml(searchQuery)}"
+          style="
+            width:100%;
+            padding:10px 14px;
+            border-radius:var(--radius-sm);
+            border:1px solid var(--card-border);
+            background:var(--card-bg);
+            color:var(--tg-theme-text-color);
+            font-size:14px;
+            outline:none;
+          "
+        />
+      </div>
+    `;
+  }
+
+  /* ─ Section heading ─ */
+  const sectionTitles = {
+    hot: '🔥 Hot Collections',
+    rare: '💎 Rarest Collections',
+    all: '📊 All Collections',
+    search: '🔍 Search Results',
+  };
+  const sectionKey = activeFilter === 'search' ? 'search' : activeFilter;
+  html += `
+    <div class="section-header">
+      <span class="section-title">${sectionTitles[sectionKey]}</span>
+      <span style="font-size:12px;color:var(--tg-theme-hint-color)">${collections.length} shown</span>
+    </div>
+  `;
+
+  /* ─ Collection cards ─ */
+  if (collections.length === 0) {
+    html += `
+      <div class="empty-state">
+        <div class="empty-state-icon">🔍</div>
+        <div class="empty-state-text">No collections match "${escHtml(searchQuery)}"</div>
+      </div>
+    `;
+  } else {
+    collections.forEach(col => {
+      const fragmentUrl = getFragmentCollectionUrl(col.slug);
+      html += `
+        <div class="token-row" data-gift-slug="${escHtml(col.slug)}">
+          <div class="token-icon">${col.emoji}</div>
+          <div class="token-info" style="gap:2px">
+            <div class="token-name">${escHtml(col.name)}</div>
+            <div class="token-symbol">
+              ${tierBadge(col.tier)}
+              <span style="margin-left:4px;font-size:11px;color:var(--tg-theme-hint-color)">Supply: ${formatNumber(col.supply)}</span>
+            </div>
+          </div>
+          <div class="token-price-col" style="display:flex;align-items:center;gap:6px">
+            <a href="${escHtml(fragmentUrl)}" target="_blank" rel="noopener"
+               onclick="event.stopPropagation()"
+               style="
+                 font-size:11px;
+                 color:var(--tg-theme-link-color);
+                 text-decoration:none;
+                 padding:4px 10px;
+                 border-radius:6px;
+                 background:rgba(0,122,255,0.1);
+                 white-space:nowrap;
+               ">Fragment ↗</a>
+          </div>
+        </div>
+      `;
+    });
+  }
+
+  /* ─ Footer ─ */
+  html += `
+    <div class="card" style="margin-top:12px;text-align:center">
+      <div style="font-size:12px;color:var(--tg-theme-hint-color);padding:8px 0">
+        Data from <a href="https://fragment.com" target="_blank" rel="noopener" style="color:var(--tg-theme-link-color);text-decoration:none">Fragment.com</a>
+        &nbsp;·&nbsp; Prices coming soon via TON API
+      </div>
+    </div>
+  `;
+
+  return html;
+}
+
+/* ── Lifecycle ───────────────────────────────────────────── */
 export function mount() {
   if (!mounted) {
     mounted = true;
-    loadGifts();
+    // Static data — nothing to fetch on mount
   }
 }
 
 export function refresh() {
-  loadGifts();
+  // Future: reload floor prices from TON API
+}
+
+/**
+ * Handle clicks inside the gifts view.
+ * Returns true if a re-render is needed.
+ */
+export function onInteract(e) {
+  /* Filter pill click */
+  const pill = e.target.closest('.filter-pill');
+  if (pill) {
+    const f = pill.dataset.filter;
+    if (f === 'search') {
+      activeFilter = 'search';
+      searchQuery = searchQuery || '';
+    } else {
+      activeFilter = f;
+      if (!searchQuery) {
+        // stay in normal mode
+      }
+    }
+    return true;
+  }
+
+  /* Search input */
+  const input = e.target.closest('#gift-search');
+  if (input) {
+    // We handle input via the 'input' event below — no re-render needed here
+    return false;
+  }
+
+  /* Collection row click → open Fragment */
+  const row = e.target.closest('.token-row[data-gift-slug]');
+  if (row && !e.target.closest('a')) {
+    const slug = row.dataset.giftSlug;
+    if (slug) {
+      window.open(getFragmentCollectionUrl(slug), '_blank');
+    }
+    return false;
+  }
+
+  return false;
+}
+
+/* ── Search input handler (delegated) ───────────────────── */
+// We need to capture input events on the search box.
+// Since the main app re-renders on interaction, we use a MutationObserver-style
+// approach: attach input listeners after each render via a requestAnimationFrame.
+let lastInputListener = null;
+
+const _origRender = render;
+
+// Patch: after the view HTML is inserted by main.js, hook the search input.
+// We do this via a side-effect: main.js calls render() → sets innerHTML →
+// then we can query the DOM. We use requestAnimationFrame to run after paint.
+function hookSearchInput() {
+  cancelAnimationFrame(lastInputListener);
+  lastInputListener = requestAnimationFrame(() => {
+    const el = document.getElementById('gift-search');
+    if (el && !el._hooked) {
+      el._hooked = true;
+      el.addEventListener('input', (evt) => {
+        searchQuery = evt.target.value;
+        // Re-render the list but preserve focus
+        const content = document.getElementById('content');
+        if (content) {
+          const html = render();
+          content.innerHTML = html;
+          hookSearchInput();
+          // Restore focus + cursor position
+          const newEl = document.getElementById('gift-search');
+          if (newEl) {
+            newEl.focus();
+            newEl.setSelectionRange(newEl.value.length, newEl.value.length);
+          }
+        }
+      });
+      el.focus();
+    }
+  });
+}
+
+// Observe DOM changes to hook search input after any re-render
+if (typeof MutationObserver !== 'undefined') {
+  const observer = new MutationObserver(() => {
+    if (document.getElementById('gift-search')) {
+      hookSearchInput();
+    }
+  });
+  // Start observing once the DOM is ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+      const content = document.getElementById('content');
+      if (content) observer.observe(content, { childList: true });
+    });
+  } else {
+    const content = document.getElementById('content');
+    if (content) observer.observe(content, { childList: true });
+  }
 }
