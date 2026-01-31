@@ -57,20 +57,25 @@ async function loadLiveData() {
   if (!hasApiKey()) return;
   store.set('giftsLoading', true);
   try {
-    const [collections, onSale, history] = await Promise.allSettled([
+    const [topRes, onSaleRes, historyRes] = await Promise.allSettled([
       getTopGiftCollections(),
-      getGiftsOnSale(undefined, 30),
-      getGiftHistory(undefined, 30),
+      getGiftsOnSale(undefined, 40),
+      getGiftHistory(undefined, 40),
     ]);
 
-    if (collections.status === 'fulfilled') {
-      store.set('ggGiftCollections', collections.value);
+    if (topRes.status === 'fulfilled') {
+      // topRes.value = { cursor, items: [{ place, collection: {address,name,image,...}, value, floorPrice, diffPercent }] }
+      const items = topRes.value?.items || topRes.value || [];
+      store.set('ggGiftCollections', items);
     }
-    if (onSale.status === 'fulfilled') {
-      store.set('ggGiftsOnSale', onSale.value?.items || onSale.value || []);
+    if (onSaleRes.status === 'fulfilled') {
+      // items: [{ address, name, image, attributes, sale: { type, fullPrice, currency } }]
+      const items = onSaleRes.value?.items || onSaleRes.value || [];
+      store.set('ggGiftsOnSale', items);
     }
-    if (history.status === 'fulfilled') {
-      store.set('ggGiftHistory', history.value?.items || history.value || []);
+    if (historyRes.status === 'fulfilled') {
+      const items = historyRes.value?.items || historyRes.value || [];
+      store.set('ggGiftHistory', items);
     }
   } catch (err) {
     console.error('Getgems data load failed:', err);
@@ -187,13 +192,14 @@ export function render() {
       </div>
     `;
   } else {
-    // Check if we have Getgems enrichment data
-    const ggCollections = store.get('ggGiftCollections');
+    // Check if we have Getgems enrichment data (top collections)
+    const ggCollections = store.get('ggGiftCollections') || [];
     const ggMap = {};
     if (Array.isArray(ggCollections)) {
-      ggCollections.forEach(c => {
-        const slug = (c.slug || c.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-        ggMap[slug] = c;
+      ggCollections.forEach(item => {
+        const col = item.collection || item;
+        const name = (col.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        ggMap[name] = { ...item, ...col, floorPrice: item.floorPrice, diffPercent: item.diffPercent, volume: item.value };
       });
     }
 
@@ -202,10 +208,13 @@ export function render() {
       const getgemsUrl = `https://getgems.io/gifts/${col.slug}`;
 
       // Try to find Getgems enrichment
-      const cleanSlug = col.slug.replace(/[^a-z0-9]/g, '');
-      const gg = ggMap[cleanSlug];
-      const floorTon = gg?.floorPrice ? nanoToTon(Number(gg.floorPrice)) : null;
+      const cleanName = col.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const gg = ggMap[cleanName];
+      // floorPrice from top collections is already in TON (not nanoTON)
+      const floorTon = gg?.floorPrice || null;
       const floorUsdVal = floorTon && tonUsd ? floorTon * tonUsd : null;
+      const diff = gg?.diffPercent;
+      const volume = gg?.volume ? nanoToTon(Number(gg.volume)) : null;
 
       html += `
         <div class="token-row" data-gift-slug="${escHtml(col.slug)}">
@@ -219,8 +228,8 @@ export function render() {
           </div>
           <div class="token-price-col" style="text-align:right">
             ${floorTon ? `
-              <div class="token-price">${floorTon.toFixed(1)} TON</div>
-              <div style="font-size:11px;color:var(--tg-theme-hint-color)">${formatUsd(floorUsdVal)}</div>
+              <div class="token-price">${floorTon >= 1000 ? (floorTon/1000).toFixed(1)+'K' : floorTon.toFixed(1)} TON</div>
+              <div style="font-size:11px;color:${diff > 0 ? 'var(--green)' : diff < 0 ? 'var(--red)' : 'var(--tg-theme-hint-color)'}">${diff ? (diff > 0 ? '+' : '') + diff.toFixed(1) + '%' : formatUsd(floorUsdVal)}</div>
             ` : ''}
             <div style="display:flex;gap:4px;justify-content:flex-end;margin-top:2px">
               <a href="${escHtml(getgemsUrl)}" target="_blank" rel="noopener"
@@ -262,12 +271,14 @@ function renderLiveOnSale(tonUsd) {
 
   items.slice(0, 40).forEach(item => {
     const name = item.name || 'Unknown Gift';
-    const image = item.image || '';
+    const image = item.imageSizes?.['96'] || item.image || '';
     const sale = item.sale || {};
-    const priceTon = sale.lastBidAmount ? nanoToTon(Number(sale.lastBidAmount)) :
+    const priceTon = sale.fullPrice ? nanoToTon(Number(sale.fullPrice)) :
+                     sale.lastBidAmount ? nanoToTon(Number(sale.lastBidAmount)) :
                      sale.minBid ? nanoToTon(Number(sale.minBid)) : null;
     const priceUsd = priceTon && tonUsd ? priceTon * tonUsd : null;
-    const saleType = sale.type || 'Sale';
+    const saleType = sale.type === 'FixPriceSale' ? 'Buy Now' : sale.type === 'Auction' ? 'Auction' : 'Sale';
+    const attrs = (item.attributes || []).map(a => a.value).join(' · ');
     const marketplace = 'Getgems';
     const nftAddr = item.address || '';
 
@@ -278,7 +289,7 @@ function renderLiveOnSale(tonUsd) {
         </div>
         <div class="token-info">
           <div class="token-name">${escHtml(name)}</div>
-          <div class="token-symbol">${saleType} · ${marketplace}</div>
+          <div class="token-symbol">${saleType}${attrs ? ' · ' + escHtml(attrs.slice(0, 40)) : ''}</div>
         </div>
         <div class="token-price-col">
           ${priceTon ? `
@@ -316,10 +327,12 @@ function renderSaleHistory(tonUsd) {
 
   items.slice(0, 40).forEach(item => {
     const name = item.nftName || item.name || 'Gift';
-    const priceTon = item.price ? nanoToTon(Number(item.price)) : null;
+    const priceTon = item.price ? nanoToTon(Number(item.price)) :
+                     item.fullPrice ? nanoToTon(Number(item.fullPrice)) : null;
     const priceUsd = priceTon && tonUsd ? priceTon * tonUsd : null;
-    const date = item.createdAt ? timeAgo(Math.floor(new Date(item.createdAt).getTime() / 1000)) : '';
-    const image = item.nftImage || item.image || '';
+    const date = item.createdAt ? timeAgo(Math.floor(new Date(item.createdAt).getTime() / 1000)) :
+                 item.date ? timeAgo(Math.floor(new Date(item.date).getTime() / 1000)) : '';
+    const image = item.nftImageSizes?.['96'] || item.nftImage || item.imageSizes?.['96'] || item.image || '';
 
     html += `
       <div class="token-row">

@@ -53,7 +53,10 @@ async function ggFetch(path, params = {}) {
   }
 
   const data = await res.json();
-  return data.response || data;
+  if (!data.success && data.name === 'Unauthorized') {
+    throw new Error('Getgems API: Unauthorized — check API key');
+  }
+  return data.response ?? data;
 }
 
 // ─── Gift-specific endpoints ────────────────────────────
