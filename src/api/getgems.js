@@ -16,7 +16,11 @@
  *   GET /v1/collections/top            — top NFT collections
  */
 
-const BASE = 'https://api.getgems.io/public-api';
+// In dev: Vite proxy at /gg-api. In production: use corsproxy
+const isDev = import.meta.env?.DEV;
+const BASE = isDev
+  ? '/gg-api'
+  : 'https://corsproxy.io/?' + encodeURIComponent('https://api.getgems.io/public-api');
 
 // API key from .env (Vite exposes VITE_ prefixed vars)
 function getApiKey() {
