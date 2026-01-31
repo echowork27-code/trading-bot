@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="color-scheme" content="dark light" />
+  <title>TON Trading Hub</title>
+  <link rel="icon" type="image/svg+xml" href="/trading-bot/favicon.svg" />
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script type="module" crossorigin src="/trading-bot/assets/index-Dupx3AVK.js"></script>
+  <link rel="stylesheet" crossorigin href="/trading-bot/assets/index-C7PudRQx.css">
+</head>
+<body>
+  <div id="app">
+    <header id="header">
+      <div class="header-content">
+        <h1>💎 TON Trading Hub</h1>
+        <div id="ton-price" class="ton-price">
+          <span class="price-value">—</span>
+          <span class="price-change"></span>
+        </div>
+      </div>
+    </header>
+
+    <main id="content">
+      <div class="loading-screen">
+        <div class="spinner"></div>
+        <p>Loading market data...</p>
+      </div>
+    </main>
+
+    <nav id="tabs">
+      <button class="tab active" data-tab="gifts">
+        <span class="tab-icon">🎁</span>
+        <span class="tab-label">Gifts</span>
+      </button>
+      <button class="tab" data-tab="usernames">
+        <span class="tab-icon">👤</span>
+        <span class="tab-label">Names</span>
+      </button>
+      <button class="tab" data-tab="numbers">
+        <span class="tab-icon">📱</span>
+        <span class="tab-label">Numbers</span>
+      </button>
+      <button class="tab" data-tab="memecoins">
+        <span class="tab-icon">🚀</span>
+        <span class="tab-label">Coins</span>
+      </button>
+    </nav>
+  </div>
+
+</body>
+</html>
