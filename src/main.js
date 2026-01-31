@@ -117,7 +117,7 @@ $content.addEventListener('click', (e) => {
 // === Reactive Re-renders ===
 // Re-render when any data changes that the current view might care about
 const viewDataKeys = {
-  gifts: ['giftsLoading', 'giftCollections', 'tonPrice'],
+  gifts: ['giftsLoading', 'giftCollections', 'tonPrice', 'ggGiftCollections', 'ggGiftsOnSale', 'ggGiftHistory'],
   usernames: ['usernamesLoading', 'usernameAuctions', 'usernameAuctionsTotal', 'tonPrice'],
   numbers: ['numbersLoading', 'anonymousNumbers', 'tonPrice'],
   memecoins: ['memecoinsLoading', 'trackedTokens', 'newTokens', 'tokenPrices', 'tonPrice'],

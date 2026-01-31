@@ -1,10 +1,11 @@
 import { store } from '../store/state.js';
 import { GIFT_COLLECTIONS, TOTAL_GIFTS, TIER_CONFIG, TIER_COUNTS } from '../data/gift-collections.js';
 import { getFragmentCollectionUrl } from '../api/fragment.js';
-import { formatNumber } from '../utils/format.js';
+import { hasApiKey, getGiftCollections, getTopGiftCollections, getGiftsOnSale, getGiftHistory } from '../api/getgems.js';
+import { formatNumber, formatUsd, nanoToTon, timeAgo } from '../utils/format.js';
 
 /* ── Local UI state ─────────────────────────────────────── */
-let activeFilter = 'hot';   // hot | rare | all
+let activeFilter = 'hot';   // hot | rare | all | live | history
 let searchQuery  = '';
 let mounted      = false;
 
@@ -22,26 +23,21 @@ function tierBadge(t) {
   return `<span class="card-badge" style="background:${cfg.bg};color:${cfg.color}">${cfg.label}</span>`;
 }
 
-/** Sort helpers */
-const bySupplyAsc  = (a, b) => a.supply - b.supply;
-const bySupplyDesc = (a, b) => b.supply - a.supply;
+const bySupplyAsc = (a, b) => a.supply - b.supply;
 
 function getFilteredCollections() {
   let list = [...GIFT_COLLECTIONS];
 
-  // Search filter
   if (searchQuery.trim()) {
     const q = searchQuery.trim().toLowerCase();
     list = list.filter(c =>
       c.name.toLowerCase().includes(q) ||
-      c.tier.includes(q) ||
-      c.emoji.includes(q)
+      c.tier.includes(q)
     );
   }
 
   switch (activeFilter) {
     case 'hot':
-      // "Hot" = rarest first (lowest supply = most trading activity & value)
       list.sort(bySupplyAsc);
       list = list.slice(0, 30);
       break;
@@ -56,9 +52,38 @@ function getFilteredCollections() {
   return list;
 }
 
+/* ── Getgems data loading ───────────────────────────────── */
+async function loadLiveData() {
+  if (!hasApiKey()) return;
+  store.set('giftsLoading', true);
+  try {
+    const [collections, onSale, history] = await Promise.allSettled([
+      getTopGiftCollections(),
+      getGiftsOnSale(undefined, 30),
+      getGiftHistory(undefined, 30),
+    ]);
+
+    if (collections.status === 'fulfilled') {
+      store.set('ggGiftCollections', collections.value);
+    }
+    if (onSale.status === 'fulfilled') {
+      store.set('ggGiftsOnSale', onSale.value?.items || onSale.value || []);
+    }
+    if (history.status === 'fulfilled') {
+      store.set('ggGiftHistory', history.value?.items || history.value || []);
+    }
+  } catch (err) {
+    console.error('Getgems data load failed:', err);
+  }
+  store.set('giftsLoading', false);
+}
+
 /* ── Render ──────────────────────────────────────────────── */
 export function render() {
-  const collections = getFilteredCollections();
+  const apiAvailable = hasApiKey();
+  const loading = store.get('giftsLoading');
+  const tonPrice = store.get('tonPrice');
+  const tonUsd = tonPrice?.price || 0;
 
   let html = '';
 
@@ -66,6 +91,7 @@ export function render() {
   html += `
     <div class="section-header">
       <span class="section-title">🎁 Gift Market</span>
+      <span class="refresh-hint">${loading ? '⟳' : ''}</span>
     </div>
     <div class="card">
       <div class="card-stats" style="justify-content:space-between">
@@ -86,49 +112,59 @@ export function render() {
           <span class="stat-value" style="color:#AF52DE">${TIER_COUNTS.epic || 0}</span>
         </div>
       </div>
+      ${!apiAvailable ? `
+        <div style="margin-top:10px;padding:8px 12px;border-radius:8px;background:rgba(255,149,0,0.1);font-size:12px;color:var(--orange)">
+          ⚡ Add Getgems API key for live floor prices & sales data
+        </div>
+      ` : ''}
     </div>
   `;
 
-  /* ─ Filter pills + search ─ */
+  /* ─ Filter pills ─ */
   const pills = [
-    { id: 'hot',  label: '🔥 Hot' },
+    { id: 'hot', label: '🔥 Hot' },
     { id: 'rare', label: '💎 Rare' },
-    { id: 'all',  label: '📊 All' },
+    { id: 'all', label: '📊 All' },
   ];
+
+  // Add live data tabs when API is available
+  if (apiAvailable) {
+    pills.push({ id: 'live', label: '🛒 On Sale' });
+    pills.push({ id: 'history', label: '📜 Sales' });
+  }
 
   html += `<div class="filter-row">`;
   pills.forEach(p => {
     const cls = p.id === activeFilter ? 'filter-pill active' : 'filter-pill';
     html += `<button class="${cls}" data-filter="${p.id}">${p.label}</button>`;
   });
-  html += `<button class="filter-pill${searchQuery ? ' active' : ''}" data-filter="search">🔍 Search</button>`;
+  html += `<button class="filter-pill${activeFilter === 'search' ? ' active' : ''}" data-filter="search">🔍</button>`;
   html += `</div>`;
 
-  /* Search input (visible only when search is focused or has text) */
+  /* Search input */
   if (activeFilter === 'search' || searchQuery) {
     html += `
       <div style="margin-bottom:12px">
-        <input
-          id="gift-search"
-          type="text"
-          placeholder="Search collections..."
+        <input id="gift-search" type="text" placeholder="Search collections..."
           value="${escHtml(searchQuery)}"
-          style="
-            width:100%;
-            padding:10px 14px;
-            border-radius:var(--radius-sm);
-            border:1px solid var(--card-border);
-            background:var(--card-bg);
-            color:var(--tg-theme-text-color);
-            font-size:14px;
-            outline:none;
-          "
-        />
+          style="width:100%;padding:10px 14px;border-radius:var(--radius-sm);border:1px solid var(--card-border);background:var(--card-bg);color:var(--tg-theme-text-color);font-size:14px;outline:none;" />
       </div>
     `;
   }
 
-  /* ─ Section heading ─ */
+  /* ─ Live tabs (Getgems API) ─ */
+  if (activeFilter === 'live') {
+    html += renderLiveOnSale(tonUsd);
+    return html + renderFooter();
+  }
+
+  if (activeFilter === 'history') {
+    html += renderSaleHistory(tonUsd);
+    return html + renderFooter();
+  }
+
+  /* ─ Static collection list ─ */
+  const collections = getFilteredCollections();
   const sectionTitles = {
     hot: '🔥 Hot Collections',
     rare: '💎 Rarest Collections',
@@ -143,7 +179,6 @@ export function render() {
     </div>
   `;
 
-  /* ─ Collection cards ─ */
   if (collections.length === 0) {
     html += `
       <div class="empty-state">
@@ -152,8 +187,26 @@ export function render() {
       </div>
     `;
   } else {
+    // Check if we have Getgems enrichment data
+    const ggCollections = store.get('ggGiftCollections');
+    const ggMap = {};
+    if (Array.isArray(ggCollections)) {
+      ggCollections.forEach(c => {
+        const slug = (c.slug || c.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        ggMap[slug] = c;
+      });
+    }
+
     collections.forEach(col => {
       const fragmentUrl = getFragmentCollectionUrl(col.slug);
+      const getgemsUrl = `https://getgems.io/gifts/${col.slug}`;
+
+      // Try to find Getgems enrichment
+      const cleanSlug = col.slug.replace(/[^a-z0-9]/g, '');
+      const gg = ggMap[cleanSlug];
+      const floorTon = gg?.floorPrice ? nanoToTon(Number(gg.floorPrice)) : null;
+      const floorUsdVal = floorTon && tonUsd ? floorTon * tonUsd : null;
+
       html += `
         <div class="token-row" data-gift-slug="${escHtml(col.slug)}">
           <div class="token-icon">${col.emoji}</div>
@@ -164,101 +217,190 @@ export function render() {
               <span style="margin-left:4px;font-size:11px;color:var(--tg-theme-hint-color)">Supply: ${formatNumber(col.supply)}</span>
             </div>
           </div>
-          <div class="token-price-col" style="display:flex;align-items:center;gap:6px">
-            <a href="${escHtml(fragmentUrl)}" target="_blank" rel="noopener"
-               onclick="event.stopPropagation()"
-               style="
-                 font-size:11px;
-                 color:var(--tg-theme-link-color);
-                 text-decoration:none;
-                 padding:4px 10px;
-                 border-radius:6px;
-                 background:rgba(0,122,255,0.1);
-                 white-space:nowrap;
-               ">Fragment ↗</a>
+          <div class="token-price-col" style="text-align:right">
+            ${floorTon ? `
+              <div class="token-price">${floorTon.toFixed(1)} TON</div>
+              <div style="font-size:11px;color:var(--tg-theme-hint-color)">${formatUsd(floorUsdVal)}</div>
+            ` : ''}
+            <div style="display:flex;gap:4px;justify-content:flex-end;margin-top:2px">
+              <a href="${escHtml(getgemsUrl)}" target="_blank" rel="noopener"
+                 onclick="event.stopPropagation()"
+                 style="font-size:10px;color:var(--green);text-decoration:none;padding:2px 6px;border-radius:4px;background:rgba(52,199,89,0.1);">GG</a>
+              <a href="${escHtml(fragmentUrl)}" target="_blank" rel="noopener"
+                 onclick="event.stopPropagation()"
+                 style="font-size:10px;color:var(--blue);text-decoration:none;padding:2px 6px;border-radius:4px;background:rgba(0,122,255,0.1);">Frag</a>
+            </div>
           </div>
         </div>
       `;
     });
   }
 
-  /* ─ Footer ─ */
-  html += `
-    <div class="card" style="margin-top:12px;text-align:center">
-      <div style="font-size:12px;color:var(--tg-theme-hint-color);padding:8px 0">
-        Data from <a href="https://fragment.com" target="_blank" rel="noopener" style="color:var(--tg-theme-link-color);text-decoration:none">Fragment.com</a>
-        &nbsp;·&nbsp; Prices coming soon via TON API
-      </div>
+  return html + renderFooter();
+}
+
+/* ─ Live On Sale section ─ */
+function renderLiveOnSale(tonUsd) {
+  const items = store.get('ggGiftsOnSale') || [];
+
+  let html = `
+    <div class="section-header">
+      <span class="section-title">🛒 Gifts On Sale</span>
+      <span style="font-size:12px;color:var(--tg-theme-hint-color)">${items.length} listed</span>
     </div>
   `;
 
+  if (items.length === 0) {
+    html += `
+      <div class="empty-state">
+        <div class="empty-state-icon">🛒</div>
+        <div class="empty-state-text">Loading live listings...</div>
+      </div>
+    `;
+    return html;
+  }
+
+  items.slice(0, 40).forEach(item => {
+    const name = item.name || 'Unknown Gift';
+    const image = item.image || '';
+    const sale = item.sale || {};
+    const priceTon = sale.lastBidAmount ? nanoToTon(Number(sale.lastBidAmount)) :
+                     sale.minBid ? nanoToTon(Number(sale.minBid)) : null;
+    const priceUsd = priceTon && tonUsd ? priceTon * tonUsd : null;
+    const saleType = sale.type || 'Sale';
+    const marketplace = 'Getgems';
+    const nftAddr = item.address || '';
+
+    html += `
+      <div class="token-row" onclick="window.open('https://getgems.io/nft/${nftAddr}', '_blank')">
+        <div class="token-icon">
+          ${image ? `<img src="${escHtml(image)}" alt="" loading="lazy" style="width:100%;height:100%;object-fit:cover;border-radius:50%" onerror="this.parentElement.textContent='🎁'" />` : '🎁'}
+        </div>
+        <div class="token-info">
+          <div class="token-name">${escHtml(name)}</div>
+          <div class="token-symbol">${saleType} · ${marketplace}</div>
+        </div>
+        <div class="token-price-col">
+          ${priceTon ? `
+            <div class="token-price">${priceTon.toFixed(1)} TON</div>
+            <div style="font-size:11px;color:var(--tg-theme-hint-color)">${priceUsd ? formatUsd(priceUsd) : ''}</div>
+          ` : '<div class="token-price">—</div>'}
+        </div>
+      </div>
+    `;
+  });
+
   return html;
+}
+
+/* ─ Sale History section ─ */
+function renderSaleHistory(tonUsd) {
+  const items = store.get('ggGiftHistory') || [];
+
+  let html = `
+    <div class="section-header">
+      <span class="section-title">📜 Recent Sales</span>
+      <span style="font-size:12px;color:var(--tg-theme-hint-color)">${items.length} sales</span>
+    </div>
+  `;
+
+  if (items.length === 0) {
+    html += `
+      <div class="empty-state">
+        <div class="empty-state-icon">📜</div>
+        <div class="empty-state-text">Loading sale history...</div>
+      </div>
+    `;
+    return html;
+  }
+
+  items.slice(0, 40).forEach(item => {
+    const name = item.nftName || item.name || 'Gift';
+    const priceTon = item.price ? nanoToTon(Number(item.price)) : null;
+    const priceUsd = priceTon && tonUsd ? priceTon * tonUsd : null;
+    const date = item.createdAt ? timeAgo(Math.floor(new Date(item.createdAt).getTime() / 1000)) : '';
+    const image = item.nftImage || item.image || '';
+
+    html += `
+      <div class="token-row">
+        <div class="token-icon">
+          ${image ? `<img src="${escHtml(image)}" alt="" loading="lazy" style="width:100%;height:100%;object-fit:cover;border-radius:50%" onerror="this.parentElement.textContent='🎁'" />` : '🎁'}
+        </div>
+        <div class="token-info">
+          <div class="token-name">${escHtml(name)}</div>
+          <div class="token-symbol" style="color:var(--green)">Sold ${date}</div>
+        </div>
+        <div class="token-price-col">
+          ${priceTon ? `
+            <div class="token-price">${priceTon.toFixed(1)} TON</div>
+            <div style="font-size:11px;color:var(--tg-theme-hint-color)">${priceUsd ? formatUsd(priceUsd) : ''}</div>
+          ` : '<div class="token-price">—</div>'}
+        </div>
+      </div>
+    `;
+  });
+
+  return html;
+}
+
+function renderFooter() {
+  return `
+    <div class="card" style="margin-top:12px;text-align:center">
+      <div style="font-size:12px;color:var(--tg-theme-hint-color);padding:8px 0">
+        <a href="https://getgems.io/gifts" target="_blank" rel="noopener" style="color:var(--green);text-decoration:none">Getgems</a>
+        &nbsp;·&nbsp;
+        <a href="https://fragment.com/gifts" target="_blank" rel="noopener" style="color:var(--tg-theme-link-color);text-decoration:none">Fragment</a>
+        ${hasApiKey() ? '' : '&nbsp;·&nbsp; <span style="color:var(--orange)">API key needed for live data</span>'}
+      </div>
+    </div>
+  `;
 }
 
 /* ── Lifecycle ───────────────────────────────────────────── */
 export function mount() {
   if (!mounted) {
     mounted = true;
-    // Static data — nothing to fetch on mount
+    if (hasApiKey()) loadLiveData();
   }
 }
 
 export function refresh() {
-  // Future: reload floor prices from TON API
+  if (hasApiKey()) loadLiveData();
 }
 
-/**
- * Handle clicks inside the gifts view.
- * Returns true if a re-render is needed.
- */
 export function onInteract(e) {
-  /* Filter pill click */
   const pill = e.target.closest('.filter-pill');
   if (pill) {
     const f = pill.dataset.filter;
     if (f === 'search') {
       activeFilter = 'search';
-      searchQuery = searchQuery || '';
     } else {
       activeFilter = f;
-      if (!searchQuery) {
-        // stay in normal mode
+      // Load live data if switching to live tabs
+      if ((f === 'live' || f === 'history') && hasApiKey()) {
+        const storeKey = f === 'live' ? 'ggGiftsOnSale' : 'ggGiftHistory';
+        if (!(store.get(storeKey) || []).length) loadLiveData();
       }
     }
     return true;
   }
 
-  /* Search input */
   const input = e.target.closest('#gift-search');
-  if (input) {
-    // We handle input via the 'input' event below — no re-render needed here
-    return false;
-  }
+  if (input) return false;
 
-  /* Collection row click → open Fragment */
   const row = e.target.closest('.token-row[data-gift-slug]');
   if (row && !e.target.closest('a')) {
     const slug = row.dataset.giftSlug;
-    if (slug) {
-      window.open(getFragmentCollectionUrl(slug), '_blank');
-    }
+    if (slug) window.open(`https://getgems.io/gifts/${slug}`, '_blank');
     return false;
   }
 
   return false;
 }
 
-/* ── Search input handler (delegated) ───────────────────── */
-// We need to capture input events on the search box.
-// Since the main app re-renders on interaction, we use a MutationObserver-style
-// approach: attach input listeners after each render via a requestAnimationFrame.
+/* ── Search input handler ───────────────────────────────── */
 let lastInputListener = null;
 
-const _origRender = render;
-
-// Patch: after the view HTML is inserted by main.js, hook the search input.
-// We do this via a side-effect: main.js calls render() → sets innerHTML →
-// then we can query the DOM. We use requestAnimationFrame to run after paint.
 function hookSearchInput() {
   cancelAnimationFrame(lastInputListener);
   lastInputListener = requestAnimationFrame(() => {
@@ -267,13 +409,10 @@ function hookSearchInput() {
       el._hooked = true;
       el.addEventListener('input', (evt) => {
         searchQuery = evt.target.value;
-        // Re-render the list but preserve focus
         const content = document.getElementById('content');
         if (content) {
-          const html = render();
-          content.innerHTML = html;
+          content.innerHTML = render();
           hookSearchInput();
-          // Restore focus + cursor position
           const newEl = document.getElementById('gift-search');
           if (newEl) {
             newEl.focus();
@@ -286,14 +425,10 @@ function hookSearchInput() {
   });
 }
 
-// Observe DOM changes to hook search input after any re-render
 if (typeof MutationObserver !== 'undefined') {
   const observer = new MutationObserver(() => {
-    if (document.getElementById('gift-search')) {
-      hookSearchInput();
-    }
+    if (document.getElementById('gift-search')) hookSearchInput();
   });
-  // Start observing once the DOM is ready
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
       const content = document.getElementById('content');

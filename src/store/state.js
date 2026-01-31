@@ -21,6 +21,11 @@ class Store {
       anonymousNumbers: [],
       numbersLoading: true,
       
+      // Getgems Gift data
+      ggGiftCollections: [],
+      ggGiftsOnSale: [],
+      ggGiftHistory: [],
+      
       // Memecoins
       trackedTokens: [],
       newTokens: [],
